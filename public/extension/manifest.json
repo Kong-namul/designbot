@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Design QA Inspector",
+  "version": "1.0.0",
+  "description": "Figma 디자인과 개발 결과물의 margin/padding/spacing을 AI로 자동 비교합니다",
+  "permissions": ["activeTab", "scripting", "storage", "clipboardWrite"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Design QA Inspector"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  }
+}

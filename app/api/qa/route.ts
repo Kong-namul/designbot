@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
-  const { prompt, figmaFileUrl } = await req.json();
+  const { prompt, figmaFileUrl, responseType } = await req.json();
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -42,6 +42,17 @@ export async function POST(req: NextRequest) {
       .map((b: { text: string }) => b.text)
       .join("");
     const clean = text.replace(/```json|```/g, "").trim();
+
+    // 컴포넌트 검사처럼 배열 응답이 필요한 경우
+    if (responseType === "array") {
+      const si = clean.indexOf("[");
+      const ei = clean.lastIndexOf("]");
+      if (si !== -1 && ei !== -1) {
+        const result = JSON.parse(clean.slice(si, ei + 1));
+        return NextResponse.json(result);
+      }
+    }
+
     const si = clean.indexOf("{");
     const ei = clean.lastIndexOf("}");
     const result = JSON.parse(clean.slice(si, ei + 1));
