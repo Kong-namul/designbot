@@ -199,9 +199,17 @@ export default function App() {
   const [error, setError] = useState("");
   const [wStep, setWStep] = useState(1);
 
-  // Figma Token
+  // Figma Token — localStorage에 저장, UI에는 노출 안 함
   const [figmaToken, setFigmaToken] = useState("");
-  const [showFigmaToken, setShowFigmaToken] = useState(false);
+  const [figmaTokenModal, setFigmaTokenModal] = useState(false);
+  const [figmaTokenDraft, setFigmaTokenDraft] = useState("");
+  const [showFigmaTokenDraft, setShowFigmaTokenDraft] = useState(false);
+
+  // 마운트 시 저장된 토큰 복원
+  useEffect(() => {
+    const saved = localStorage.getItem("dqa_figma_token");
+    if (saved) setFigmaToken(saved);
+  }, []);
 
   // 🔐 로그인 계정
   const [loginEnabled, setLoginEnabled] = useState(false);
@@ -228,9 +236,7 @@ export default function App() {
   const toggle = <T,>(setter: React.Dispatch<React.SetStateAction<T[]>>, val: T) =>
     setter((p) => (p.includes(val) ? p.filter((x) => x !== val) : [...p, val]));
 
-  const loadFigma = async () => {
-    if (!figmaFileUrl.trim()) { setFigmaErr("Figma URL을 입력하세요."); return; }
-    if (!figmaToken.trim()) { setFigmaErr("Figma Personal Access Token을 먼저 입력하세요."); return; }
+  const doLoadFigma = async (token: string) => {
     setFigmaLoading(true); setFigmaErr(""); setFigmaPages([]);
     try {
       const m = figmaFileUrl.match(/figma\.com\/(?:file|design)\/([A-Za-z0-9]+)/);
@@ -238,16 +244,38 @@ export default function App() {
       const res = await fetch("/api/figma", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ figmaFileKey: m[1], figmaToken: figmaToken.trim() }),
+        body: JSON.stringify({ figmaFileKey: m[1], figmaToken: token }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "불러오기 실패");
       setFigmaPages(data.pages);
+      // 성공하면 토큰 저장
+      localStorage.setItem("dqa_figma_token", token);
+      setFigmaToken(token);
     } catch (e: unknown) {
       setFigmaErr("불러오기 실패: " + (e instanceof Error ? e.message : String(e)));
     } finally {
       setFigmaLoading(false);
     }
+  };
+
+  const loadFigma = () => {
+    if (!figmaFileUrl.trim()) { setFigmaErr("Figma URL을 입력하세요."); return; }
+    if (figmaToken) {
+      // 이미 저장된 토큰 있으면 바로 불러오기
+      doLoadFigma(figmaToken);
+    } else {
+      // 토큰 없으면 최초 1회 팝업
+      setFigmaTokenDraft("");
+      setFigmaTokenModal(true);
+    }
+  };
+
+  // Figma URL 붙여넣으면 자동 불러오기
+  const handleFigmaUrlChange = (url: string) => {
+    setFigmaFileUrl(url);
+    setFigmaPages([]);
+    setFigmaErr("");
   };
 
   const buildPrompt = () => {
@@ -810,6 +838,69 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
     </div>
   );
 
+  // 🔑 Figma 토큰 설정 모달 (최초 1회)
+  const FigmaTokenModal = () => (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", zIndex: 500, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setFigmaTokenModal(false)}>
+      <div style={{ background: "#fff", borderRadius: 16, padding: 32, width: 500, boxShadow: "0 20px 60px rgba(0,0,0,.25)" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>🔑 Figma 연결 설정</div>
+        <div style={{ fontSize: 13, color: "#64748b", marginBottom: 20 }}>한 번만 입력하면 브라우저에 저장돼요. 이후엔 URL만 붙여넣으면 자동으로 페이지를 불러옵니다.</div>
+
+        <div style={{ background: "#f8fafc", borderRadius: 12, padding: 16, marginBottom: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#1e293b", marginBottom: 10 }}>📋 토큰 발급 방법 (30초)</div>
+          <ol style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "#475569", lineHeight: 2.2 }}>
+            <li><a href="https://www.figma.com/settings" target="_blank" rel="noreferrer" style={{ color: PURPLE }}>figma.com/settings</a> 접속</li>
+            <li><strong>Personal access tokens</strong> 섹션 찾기</li>
+            <li><strong>Generate new token</strong> 클릭 → 이름 입력 → 생성</li>
+            <li><code style={{ background: "#e2e8f0", padding: "1px 6px", borderRadius: 4, fontSize: 12 }}>figd_...</code> 로 시작하는 값 복사 후 아래 붙여넣기</li>
+          </ol>
+        </div>
+
+        <div style={{ marginBottom: 20 }}>
+          <Label>Personal Access Token</Label>
+          <div style={{ position: "relative" }}>
+            <input
+              type={showFigmaTokenDraft ? "text" : "password"}
+              value={figmaTokenDraft}
+              onChange={(e) => setFigmaTokenDraft(e.target.value)}
+              placeholder="figd_xxxxxxxxxxxxxxxxxxxxxxxx"
+              style={{ ...inp, paddingRight: 44, fontFamily: "monospace" }}
+              autoFocus
+              autoComplete="off"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && figmaTokenDraft.trim()) {
+                  setFigmaTokenModal(false);
+                  doLoadFigma(figmaTokenDraft.trim());
+                }
+              }}
+            />
+            <button onClick={() => setShowFigmaTokenDraft((p) => !p)} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#94a3b8", fontSize: 16 }}>
+              {showFigmaTokenDraft ? "🙈" : "👁"}
+            </button>
+          </div>
+          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 5 }}>토큰은 이 브라우저에만 저장되며 서버로 전송되지 않습니다</div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+          {figmaToken && (
+            <button onClick={() => { localStorage.removeItem("dqa_figma_token"); setFigmaToken(""); setFigmaTokenModal(false); }} style={{ ...ghostBtn("#ef4444"), fontSize: 12 }}>연결 해제</button>
+          )}
+          <button onClick={() => setFigmaTokenModal(false)} style={ghostBtn("#94a3b8")}>취소</button>
+          <button
+            onClick={() => {
+              if (!figmaTokenDraft.trim()) return;
+              setFigmaTokenModal(false);
+              doLoadFigma(figmaTokenDraft.trim());
+            }}
+            disabled={!figmaTokenDraft.trim()}
+            style={{ ...solidBtn(PURPLE), opacity: figmaTokenDraft.trim() ? 1 : 0.4 }}
+          >
+            저장하고 불러오기
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
   // 🧩 크롬 확장 프로그램 안내 모달
   const ExtModal = () => (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 400, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setExtModal(false)}>
@@ -856,6 +947,7 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
     <div style={{ fontFamily: "Pretendard, Apple SD Gothic Neo, sans-serif", background: "#f8fafc", minHeight: "100vh", color: "#1e293b" }}>
       {addModal && <AddModal />}
       {extModal && <ExtModal />}
+      {figmaTokenModal && <FigmaTokenModal />}
 
       {/* Header */}
       <div style={{ background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "0 32px" }}>
@@ -906,51 +998,45 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
                     <input value={siteUrl} onChange={(e) => setSiteUrl(e.target.value)} placeholder="https://your-site.com" style={inp} />
                   </div>
                   <div>
-                    <Label sub="(선택)">Figma 파일 주소</Label>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <input value={figmaFileUrl} onChange={(e) => { setFigmaFileUrl(e.target.value); setFigmaPages([]); }} placeholder="https://www.figma.com/file/..." style={{ ...inp, flex: 1 }} />
-                      <button onClick={loadFigma} disabled={figmaLoading} style={{ ...solidBtn(PURPLE), whiteSpace: "nowrap", opacity: figmaLoading ? 0.6 : 1 }}>{figmaLoading ? "불러오는 중..." : "페이지 불러오기"}</button>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: "#374151" }}>Figma 파일 주소</span>
+                        <span style={{ fontSize: 12, color: "#94a3b8" }}>(선택)</span>
+                      </div>
+                      {figmaToken ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ fontSize: 11, color: "#22c55e", fontWeight: 600 }}>● Figma 연결됨</span>
+                          <button onClick={() => { setFigmaTokenDraft(figmaToken); setFigmaTokenModal(true); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "#94a3b8", textDecoration: "underline" }}>변경</button>
+                        </div>
+                      ) : (
+                        <button onClick={() => { setFigmaTokenDraft(""); setFigmaTokenModal(true); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 11, color: PURPLE, textDecoration: "underline" }}>🔑 연결 설정</button>
+                      )}
                     </div>
-                    {figmaErr && <div style={{ color: "#ef4444", fontSize: 12, marginTop: 4 }}>{figmaErr}</div>}
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <input
+                        value={figmaFileUrl}
+                        onChange={(e) => handleFigmaUrlChange(e.target.value)}
+                        placeholder="https://www.figma.com/file/..."
+                        style={{ ...inp, flex: 1 }}
+                      />
+                      <button onClick={loadFigma} disabled={figmaLoading} style={{ ...solidBtn(PURPLE), whiteSpace: "nowrap", opacity: figmaLoading ? 0.6 : 1 }}>
+                        {figmaLoading ? "불러오는 중..." : "페이지 불러오기"}
+                      </button>
+                    </div>
+                    {figmaErr && (
+                      <div style={{ color: "#ef4444", fontSize: 12, marginTop: 6 }}>
+                        {figmaErr}
+                        {figmaErr.includes("토큰") && (
+                          <button onClick={() => { setFigmaTokenDraft(""); setFigmaTokenModal(true); }} style={{ marginLeft: 8, background: "none", border: "none", cursor: "pointer", color: PURPLE, fontSize: 12, textDecoration: "underline" }}>🔑 토큰 설정하기</button>
+                        )}
+                      </div>
+                    )}
                     {figmaPages.length > 0 && (
                       <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                         <span style={{ fontSize: 12, color: "#64748b" }}>페이지 {figmaPages.length}개:</span>
                         {figmaPages.map((p) => <span key={p} style={{ fontSize: 12, background: "#ede9fe", color: PURPLE, padding: "2px 8px", borderRadius: 10 }}>{p}</span>)}
                       </div>
                     )}
-                  </div>
-
-                  <div>
-                    <Label sub="(Figma 페이지 불러오기에 필요)">
-                      Figma Personal Access Token
-                    </Label>
-                    <div style={{ position: "relative" }}>
-                      <input
-                        type={showFigmaToken ? "text" : "password"}
-                        value={figmaToken}
-                        onChange={(e) => setFigmaToken(e.target.value)}
-                        placeholder="figd_xxxxxxxx..."
-                        style={{ ...inp, paddingRight: 80 }}
-                        autoComplete="off"
-                      />
-                      <button
-                        onClick={() => setShowFigmaToken((p) => !p)}
-                        style={{ position: "absolute", right: 36, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#94a3b8", fontSize: 14 }}
-                      >{showFigmaToken ? "🙈" : "👁"}</button>
-                    </div>
-                    <div style={{ marginTop: 5, display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ fontSize: 11, color: "#94a3b8" }}>
-                        Figma → 프로필 아이콘 → Settings → Personal access tokens에서 발급
-                      </span>
-                      <a
-                        href="https://www.figma.com/settings"
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{ fontSize: 11, color: PURPLE, textDecoration: "none", whiteSpace: "nowrap" }}
-                      >
-                        토큰 발급 →
-                      </a>
-                    </div>
                   </div>
 
                   {/* 🔐 검수용 계정 */}
