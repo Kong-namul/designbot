@@ -1,56 +1,70 @@
 import { NextRequest, NextResponse } from "next/server";
 
+// Figma URL에서 file key 추출
+function extractFileKey(url: string): string | null {
+  const m = url.match(/figma\.com\/(?:file|design)\/([a-zA-Z0-9]+)/);
+  return m ? m[1] : null;
+}
+
 export async function POST(req: NextRequest) {
-  const { figmaFileKey, figmaToken } = await req.json();
+  const { figmaFileUrl } = await req.json();
 
-  if (!figmaFileKey) {
-    return NextResponse.json({ error: "Figma 파일 키가 필요합니다." }, { status: 400 });
+  if (!figmaFileUrl) {
+    return NextResponse.json({ error: "Figma URL이 필요합니다." }, { status: 400 });
   }
 
-  // 환경변수 또는 클라이언트에서 전달된 토큰 사용
-  const token = figmaToken || process.env.FIGMA_TOKEN;
-  if (!token) {
-    return NextResponse.json(
-      { error: "FIGMA_TOKEN이 없습니다. Figma Personal Access Token을 입력해주세요." },
-      { status: 401 }
-    );
+  const fileKey = extractFileKey(figmaFileUrl);
+  if (!fileKey) {
+    return NextResponse.json({ error: "올바른 Figma URL이 아닙니다." }, { status: 400 });
   }
 
+  // 1) Figma REST API 시도 (FIGMA_TOKEN 환경변수가 있는 경우)
+  const token = process.env.FIGMA_TOKEN;
+  if (token) {
+    try {
+      const res = await fetch(`https://api.figma.com/v1/files/${fileKey}?depth=1`, {
+        headers: { "X-Figma-Token": token },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const pages: string[] = (data.document?.children || [])
+          .filter((c: { type: string }) => c.type === "CANVAS")
+          .map((c: { name: string }) => c.name);
+        if (pages.length) {
+          return NextResponse.json({ pages, fileName: data.name, source: "api" });
+        }
+      }
+    } catch {
+      // REST API 실패 시 다음 방법으로
+    }
+  }
+
+  // 2) Figma oEmbed로 파일 제목만 가져오기 (인증 불필요)
   try {
-    // Figma REST API 직접 호출 (MCP 우회) - depth=1로 최상위만 가져와 빠름
-    const res = await fetch(`https://api.figma.com/v1/files/${figmaFileKey}?depth=1`, {
-      headers: {
-        "X-Figma-Token": token,
-      },
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      if (res.status === 403) {
-        return NextResponse.json({ error: "Figma 토큰이 유효하지 않거나 파일 접근 권한이 없습니다." }, { status: 403 });
-      }
-      if (res.status === 404) {
-        return NextResponse.json({ error: "Figma 파일을 찾을 수 없습니다. URL을 확인해주세요." }, { status: 404 });
-      }
-      return NextResponse.json({ error: err.message || `Figma API 오류 (${res.status})` }, { status: res.status });
-    }
-
-    const data = await res.json();
-
-    // document.children = 페이지 목록 (type: CANVAS)
-    const pages: string[] = (data.document?.children || [])
-      .filter((c: { type: string }) => c.type === "CANVAS")
-      .map((c: { name: string }) => c.name);
-
-    if (!pages.length) {
-      return NextResponse.json({ error: "페이지를 찾을 수 없습니다." }, { status: 404 });
-    }
-
-    return NextResponse.json({ pages, fileName: data.name });
-  } catch (e: unknown) {
-    return NextResponse.json(
-      { error: "불러오기 실패: " + (e instanceof Error ? e.message : String(e)) },
-      { status: 500 }
+    const oembedRes = await fetch(
+      `https://www.figma.com/api/oembed?url=${encodeURIComponent(figmaFileUrl)}`,
+      { headers: { "User-Agent": "DesignQA/1.0" } }
     );
+    if (oembedRes.ok) {
+      const oData = await oembedRes.json();
+      return NextResponse.json({
+        pages: [],
+        fileName: oData.title || "Figma 파일",
+        source: "oembed",
+        fileKey,
+        message: "페이지를 직접 입력해주세요",
+      });
+    }
+  } catch {
+    // oEmbed도 실패 시
   }
+
+  // 3) URL에서 파일 키만 반환 (최소 폴백)
+  return NextResponse.json({
+    pages: [],
+    fileName: `Figma 파일 (${fileKey})`,
+    source: "url",
+    fileKey,
+    message: "페이지를 직접 입력해주세요",
+  });
 }
