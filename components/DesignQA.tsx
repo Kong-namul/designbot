@@ -199,6 +199,10 @@ export default function App() {
   const [error, setError] = useState("");
   const [wStep, setWStep] = useState(1);
 
+  // Figma Token
+  const [figmaToken, setFigmaToken] = useState("");
+  const [showFigmaToken, setShowFigmaToken] = useState(false);
+
   // 🔐 로그인 계정
   const [loginEnabled, setLoginEnabled] = useState(false);
   const [loginUrl, setLoginUrl] = useState("");
@@ -226,6 +230,7 @@ export default function App() {
 
   const loadFigma = async () => {
     if (!figmaFileUrl.trim()) { setFigmaErr("Figma URL을 입력하세요."); return; }
+    if (!figmaToken.trim()) { setFigmaErr("Figma Personal Access Token을 먼저 입력하세요."); return; }
     setFigmaLoading(true); setFigmaErr(""); setFigmaPages([]);
     try {
       const m = figmaFileUrl.match(/figma\.com\/(?:file|design)\/([A-Za-z0-9]+)/);
@@ -233,7 +238,7 @@ export default function App() {
       const res = await fetch("/api/figma", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ figmaFileKey: m[1] }),
+        body: JSON.stringify({ figmaFileKey: m[1], figmaToken: figmaToken.trim() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "불러오기 실패");
@@ -908,11 +913,44 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
                     </div>
                     {figmaErr && <div style={{ color: "#ef4444", fontSize: 12, marginTop: 4 }}>{figmaErr}</div>}
                     {figmaPages.length > 0 && (
-                      <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <div style={{ marginTop: 8, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                         <span style={{ fontSize: 12, color: "#64748b" }}>페이지 {figmaPages.length}개:</span>
                         {figmaPages.map((p) => <span key={p} style={{ fontSize: 12, background: "#ede9fe", color: PURPLE, padding: "2px 8px", borderRadius: 10 }}>{p}</span>)}
                       </div>
                     )}
+                  </div>
+
+                  <div>
+                    <Label sub="(Figma 페이지 불러오기에 필요)">
+                      Figma Personal Access Token
+                    </Label>
+                    <div style={{ position: "relative" }}>
+                      <input
+                        type={showFigmaToken ? "text" : "password"}
+                        value={figmaToken}
+                        onChange={(e) => setFigmaToken(e.target.value)}
+                        placeholder="figd_xxxxxxxx..."
+                        style={{ ...inp, paddingRight: 80 }}
+                        autoComplete="off"
+                      />
+                      <button
+                        onClick={() => setShowFigmaToken((p) => !p)}
+                        style={{ position: "absolute", right: 36, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", color: "#94a3b8", fontSize: 14 }}
+                      >{showFigmaToken ? "🙈" : "👁"}</button>
+                    </div>
+                    <div style={{ marginTop: 5, display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 11, color: "#94a3b8" }}>
+                        Figma → 프로필 아이콘 → Settings → Personal access tokens에서 발급
+                      </span>
+                      <a
+                        href="https://www.figma.com/settings"
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ fontSize: 11, color: PURPLE, textDecoration: "none", whiteSpace: "nowrap" }}
+                      >
+                        토큰 발급 →
+                      </a>
+                    </div>
                   </div>
 
                   {/* 🔐 검수용 계정 */}
