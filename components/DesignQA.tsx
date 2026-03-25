@@ -868,7 +868,7 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
     <div style={{ fontFamily: "Pretendard, Apple SD Gothic Neo, sans-serif", background: "#f8fafc", minHeight: "100vh", color: "#1e293b" }}>
       {addModal && <AddModal />}
       {extModal && <ExtModal />}
-      {figmaTokenModal && <FigmaTokenModal />}
+
 
       {/* Header */}
       <div style={{ background: "#fff", borderBottom: "1px solid #e2e8f0", padding: "0 32px" }}>
