@@ -199,10 +199,13 @@ export default function App() {
   const [error, setError] = useState("");
   const [wStep, setWStep] = useState(1);
 
-  // Figma 페이지
+  // Figma 페이지·프레임
   const [figmaPageInput, setFigmaPageInput] = useState("");
   const [figmaFileName, setFigmaFileName] = useState("");
   const [figmaFetchMsg, setFigmaFetchMsg] = useState("");
+  const [figmaTree, setFigmaTree] = useState<{ id: string; name: string; frames: { id: string; name: string }[] }[]>([]);
+  const [selectedFrames, setSelectedFrames] = useState<Set<string>>(new Set());
+  const [expandedPages, setExpandedPages] = useState<Set<string>>(new Set());
 
   // 🔐 로그인 계정
   const [loginEnabled, setLoginEnabled] = useState(false);
@@ -235,11 +238,13 @@ export default function App() {
     setFigmaPages(pages);
   };
 
-  // Figma URL → 파일명·페이지 자동 가져오기 (토큰 불필요, 폴백 지원)
+  // Figma URL → 파일 구조(페이지+프레임) 자동 가져오기
   const fetchFigmaInfo = async (url: string) => {
     if (!url.includes("figma.com")) return;
-    setFigmaFetchMsg("불러오는 중...");
+    setFigmaFetchMsg("Figma 파일 읽는 중...");
     setFigmaFileName("");
+    setFigmaTree([]);
+    setSelectedFrames(new Set());
     try {
       const res = await fetch("/api/figma", {
         method: "POST",
@@ -247,19 +252,60 @@ export default function App() {
         body: JSON.stringify({ figmaFileUrl: url }),
       });
       const data = await res.json();
-      if (!res.ok) { setFigmaFetchMsg(""); return; }
+      if (!res.ok) { setFigmaFetchMsg("URL을 확인해주세요"); return; }
       setFigmaFileName(data.fileName || "");
+
       if (data.pages && data.pages.length > 0) {
-        const joined = data.pages.join(", ");
-        setFigmaPageInput(joined);
-        applyFigmaPageInput(joined);
-        setFigmaFetchMsg(`✅ ${data.pages.length}개 페이지 자동 인식`);
+        // 페이지+프레임 트리 구조
+        setFigmaTree(data.pages);
+        const allPageIds = new Set<string>(data.pages.map((p: { id: string }) => p.id));
+        setExpandedPages(allPageIds);
+
+        // 프레임이 있는 경우 전체 프레임명을 figmaPages에도 반영
+        const allFrames: string[] = [];
+        data.pages.forEach((p: { name: string; frames: { name: string }[] }) => {
+          if (p.frames && p.frames.length > 0) {
+            p.frames.forEach((f) => allFrames.push(f.name));
+          } else {
+            allFrames.push(p.name);
+          }
+        });
+        setFigmaPages(allFrames);
+
+        const totalFrames = data.pages.reduce((acc: number, p: { frames: unknown[] }) => acc + (p.frames?.length || 0), 0);
+        setFigmaFetchMsg(`✅ ${data.pages.length}개 페이지 · ${totalFrames}개 프레임 인식`);
       } else {
-        setFigmaFetchMsg("페이지 이름을 아래에 직접 입력해주세요");
+        setFigmaFetchMsg(data.needsManual ? "Figma 데스크탑을 열고 해당 파일을 확인하세요. 또는 아래에 직접 입력하세요." : "프레임을 찾을 수 없습니다. 직접 입력해주세요.");
       }
     } catch {
-      setFigmaFetchMsg("");
+      setFigmaFetchMsg("연결 실패 — 아래에 직접 입력하세요");
     }
+  };
+
+  // 프레임 선택 → pageRows 자동 생성
+  const toggleFrame = (pageName: string, frameName: string, frameKey: string) => {
+    setSelectedFrames((prev) => {
+      const next = new Set(prev);
+      if (next.has(frameKey)) {
+        next.delete(frameKey);
+        setPageRows((rows) => rows.filter((r) => r.figmaPage !== frameName));
+      } else {
+        next.add(frameKey);
+        setPageRows((rows) => {
+          const exists = rows.some((r) => r.figmaPage === frameName);
+          if (exists) return rows;
+          const emptyIdx = rows.findIndex((r) => !r.url.trim() && !r.figmaPage);
+          const newRow = { id: Date.now() + Math.random(), name: frameName, url: "", figmaPage: `${pageName} / ${frameName}` };
+          if (emptyIdx !== -1) {
+            const updated = [...rows];
+            updated[emptyIdx] = newRow;
+            return updated;
+          }
+          return [...rows, newRow];
+        });
+      }
+      return next;
+    });
   };
 
   const buildPrompt = () => {
@@ -945,24 +991,90 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
                     )}
                   </div>
 
+                  {/* Figma 프레임 선택 */}
                   <div>
-                    <Label sub="(선택 · 쉼표 또는 줄바꿈으로 구분)">Figma 페이지 이름</Label>
-                    <textarea
-                      value={figmaPageInput}
-                      onChange={(e) => {
-                        setFigmaPageInput(e.target.value);
-                        applyFigmaPageInput(e.target.value);
-                      }}
-                      placeholder={"Home, Landing, Components\n(Figma에서 보이는 페이지 이름 그대로 입력)"}
-                      style={{ ...inp, minHeight: 72, resize: "vertical", fontFamily: "inherit" }}
-                    />
-                    {figmaPages.length > 0 && (
-                      <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                        {figmaPages.map((p) => (
-                          <span key={p} style={{ fontSize: 12, background: "#ede9fe", color: PURPLE, padding: "2px 8px", borderRadius: 10 }}>
-                            {p}
+                    <Label sub="(선택)">Figma 프레임 선택</Label>
+
+                    {figmaTree.length > 0 ? (
+                      <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, overflow: "hidden", background: "#fff" }}>
+                        {/* 전체 선택/해제 */}
+                        <div style={{ padding: "8px 14px", borderBottom: "1px solid #f1f5f9", display: "flex", alignItems: "center", justifyContent: "space-between", background: "#f8fafc" }}>
+                          <span style={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>
+                            {selectedFrames.size}개 선택됨
                           </span>
-                        ))}
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button onClick={() => {
+                              const all = new Set<string>();
+                              figmaTree.forEach(p => p.frames.forEach(f => all.add(`${p.id}:${f.id}`)));
+                              setSelectedFrames(all);
+                              const rows: PageRow[] = [];
+                              figmaTree.forEach(p => p.frames.forEach(f => {
+                                rows.push({ id: Date.now() + Math.random(), name: f.name, url: "", figmaPage: `${p.name} / ${f.name}` });
+                              }));
+                              if (rows.length > 0) setPageRows(rows);
+                            }} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 6, border: `1px solid ${PURPLE}`, background: "transparent", color: PURPLE, cursor: "pointer" }}>전체 선택</button>
+                            <button onClick={() => { setSelectedFrames(new Set()); setPageRows([{ id: 1, name: "", url: "", figmaPage: "" }]); }}
+                              style={{ fontSize: 11, padding: "2px 8px", borderRadius: 6, border: "1px solid #e2e8f0", background: "transparent", color: "#64748b", cursor: "pointer" }}>초기화</button>
+                          </div>
+                        </div>
+
+                        {/* 페이지 > 프레임 트리 */}
+                        <div style={{ maxHeight: 280, overflowY: "auto" }}>
+                          {figmaTree.map((page) => (
+                            <div key={page.id}>
+                              {/* 페이지 헤더 */}
+                              <div
+                                onClick={() => setExpandedPages(prev => {
+                                  const n = new Set(prev);
+                                  n.has(page.id) ? n.delete(page.id) : n.add(page.id);
+                                  return n;
+                                })}
+                                style={{ padding: "8px 14px", display: "flex", alignItems: "center", gap: 8, cursor: "pointer", background: "#f8fafc", borderBottom: "1px solid #f1f5f9" }}
+                              >
+                                <span style={{ fontSize: 11, color: "#94a3b8", userSelect: "none" }}>{expandedPages.has(page.id) ? "▾" : "▸"}</span>
+                                <span style={{ fontSize: 13, fontWeight: 600, color: "#334155" }}>📄 {page.name}</span>
+                                <span style={{ fontSize: 11, color: "#94a3b8", marginLeft: "auto" }}>{page.frames.length}개</span>
+                              </div>
+
+                              {/* 프레임 목록 */}
+                              {expandedPages.has(page.id) && page.frames.length > 0 && (
+                                <div>
+                                  {page.frames.map((frame) => {
+                                    const key = `${page.id}:${frame.id}`;
+                                    const checked = selectedFrames.has(key);
+                                    return (
+                                      <label key={frame.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 14px 7px 32px", cursor: "pointer", borderBottom: "1px solid #f8fafc", background: checked ? "#f0f4ff" : "transparent" }}>
+                                        <input type="checkbox" checked={checked} onChange={() => toggleFrame(page.name, frame.name, key)}
+                                          style={{ width: 14, height: 14, accentColor: PURPLE, cursor: "pointer" }} />
+                                        <span style={{ fontSize: 13, color: checked ? PURPLE : "#475569", fontWeight: checked ? 600 : 400 }}>🖼 {frame.name}</span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              {expandedPages.has(page.id) && page.frames.length === 0 && (
+                                <div style={{ padding: "7px 14px 7px 32px", fontSize: 12, color: "#94a3b8", borderBottom: "1px solid #f8fafc" }}>프레임 없음</div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      /* 수동 입력 폴백 */
+                      <div>
+                        <textarea
+                          value={figmaPageInput}
+                          onChange={(e) => { setFigmaPageInput(e.target.value); applyFigmaPageInput(e.target.value); }}
+                          placeholder={"Home, Landing, Components\n(Figma에서 보이는 페이지/프레임 이름 입력)"}
+                          style={{ ...inp, minHeight: 72, resize: "vertical", fontFamily: "inherit" }}
+                        />
+                        {figmaPages.length > 0 && (
+                          <div style={{ marginTop: 6, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {figmaPages.map((p) => (
+                              <span key={p} style={{ fontSize: 12, background: "#ede9fe", color: PURPLE, padding: "2px 8px", borderRadius: 10 }}>{p}</span>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

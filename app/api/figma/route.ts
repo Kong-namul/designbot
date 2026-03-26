@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// Figma URL에서 file key 추출
 function extractFileKey(url: string): string | null {
   const m = url.match(/figma\.com\/(?:file|design)\/([a-zA-Z0-9]+)/);
   return m ? m[1] : null;
@@ -18,53 +17,123 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "올바른 Figma URL이 아닙니다." }, { status: 400 });
   }
 
-  // 1) Figma REST API 시도 (FIGMA_TOKEN 환경변수가 있는 경우)
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+
+  // 1) Claude + Figma MCP(use_figma) 로 데스크탑에서 직접 프레임 추출
+  if (apiKey) {
+    try {
+      const jsCode = `
+const result = figma.root.children.map(page => ({
+  id: page.id,
+  name: page.name,
+  frames: page.children
+    .filter(n => n.type === 'FRAME' || n.type === 'COMPONENT' || n.type === 'COMPONENT_SET')
+    .map(f => ({ id: f.id, name: f.name }))
+}));
+result
+`.trim();
+
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": "mcp-client-2025-04-04",
+        },
+        body: JSON.stringify({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 2000,
+          mcp_servers: [
+            {
+              type: "url",
+              url: "https://mcp.figma.com/mcp",
+              name: "figma",
+            },
+          ],
+          messages: [
+            {
+              role: "user",
+              content: `Figma 파일(${figmaFileUrl})이 데스크탑에 열려 있습니다.
+use_figma 도구를 사용하여 fileKey "${fileKey}"로 다음 JavaScript를 실행하세요:
+
+${jsCode}
+
+실행 결과를 JSON 배열로만 출력하세요. 설명 없이 JSON만.`,
+            },
+          ],
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const text = (data.content || [])
+          .filter((b: { type: string }) => b.type === "text")
+          .map((b: { text: string }) => b.text)
+          .join("");
+
+        const si = text.indexOf("[");
+        const ei = text.lastIndexOf("]");
+        if (si !== -1 && ei !== -1) {
+          const pages = JSON.parse(text.slice(si, ei + 1));
+          if (Array.isArray(pages) && pages.length > 0) {
+            return NextResponse.json({ pages, fileKey, source: "figma-desktop" });
+          }
+        }
+      }
+    } catch {
+      // Figma 데스크탑 미연결 or 에러 → 다음 폴백으로
+    }
+  }
+
+  // 2) Figma REST API (FIGMA_TOKEN 환경변수가 있는 경우)
   const token = process.env.FIGMA_TOKEN;
   if (token) {
     try {
-      const res = await fetch(`https://api.figma.com/v1/files/${fileKey}?depth=1`, {
+      const res = await fetch(`https://api.figma.com/v1/files/${fileKey}?depth=2`, {
         headers: { "X-Figma-Token": token },
       });
       if (res.ok) {
         const data = await res.json();
-        const pages: string[] = (data.document?.children || [])
+        const pages = (data.document?.children || [])
           .filter((c: { type: string }) => c.type === "CANVAS")
-          .map((c: { name: string }) => c.name);
+          .map((c: { name: string; id: string; children?: { type: string; name: string; id: string }[] }) => ({
+            id: c.id,
+            name: c.name,
+            frames: (c.children || [])
+              .filter((n) => n.type === "FRAME" || n.type === "COMPONENT")
+              .map((f) => ({ id: f.id, name: f.name })),
+          }));
         if (pages.length) {
-          return NextResponse.json({ pages, fileName: data.name, source: "api" });
+          return NextResponse.json({ pages, fileName: data.name, fileKey, source: "rest-api" });
         }
       }
-    } catch {
-      // REST API 실패 시 다음 방법으로
-    }
+    } catch { /* ignore */ }
   }
 
-  // 2) Figma oEmbed로 파일 제목만 가져오기 (인증 불필요)
+  // 3) oEmbed으로 파일명만 (폴백)
   try {
-    const oembedRes = await fetch(
+    const oRes = await fetch(
       `https://www.figma.com/api/oembed?url=${encodeURIComponent(figmaFileUrl)}`,
       { headers: { "User-Agent": "DesignQA/1.0" } }
     );
-    if (oembedRes.ok) {
-      const oData = await oembedRes.json();
+    if (oRes.ok) {
+      const o = await oRes.json();
       return NextResponse.json({
         pages: [],
-        fileName: oData.title || "Figma 파일",
-        source: "oembed",
+        fileName: o.title || "Figma 파일",
         fileKey,
-        message: "페이지를 직접 입력해주세요",
+        source: "oembed",
+        needsManual: true,
       });
     }
-  } catch {
-    // oEmbed도 실패 시
-  }
+  } catch { /* ignore */ }
 
-  // 3) URL에서 파일 키만 반환 (최소 폴백)
   return NextResponse.json({
     pages: [],
     fileName: `Figma 파일 (${fileKey})`,
-    source: "url",
     fileKey,
-    message: "페이지를 직접 입력해주세요",
+    source: "url",
+    needsManual: true,
   });
 }
