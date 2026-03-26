@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, CSSProperties, ReactNode, ChangeEvent } from "react";
+import * as XLSX from "xlsx";
 
 const DEFAULT_BREAKPOINTS = [
   { label: "모바일", width: 375 },
@@ -159,13 +160,16 @@ function FigmaSelect({ pages, value, onChange }: { pages: string[]; value: strin
   };
 
   const filtered = pages.filter((p) => p.toLowerCase().includes(q.toLowerCase()));
+  const isEmpty = pages.length === 0;
   return (
     <div style={{ position: "relative" }}>
-      <div ref={triggerRef} onClick={handleOpen} style={{ ...inp, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ color: value ? "#1e293b" : "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value || "Figma 프레임 선택"}</span>
-        <span style={{ fontSize: 10, color: "#94a3b8", flexShrink: 0, marginLeft: 4 }}>▼</span>
+      <div ref={triggerRef} onClick={isEmpty ? undefined : handleOpen} style={{ ...inp, cursor: isEmpty ? "default" : "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", opacity: isEmpty ? 0.6 : 1 }}>
+        <span style={{ color: value ? "#1e293b" : "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {value || (isEmpty ? "Figma URL 입력 후 자동 불러오기" : "Figma 프레임 선택")}
+        </span>
+        {!isEmpty && <span style={{ fontSize: 10, color: "#94a3b8", flexShrink: 0, marginLeft: 4 }}>▼</span>}
       </div>
-      {open && rect && (
+      {open && rect && !isEmpty && (
         <div
           ref={dropRef}
           style={{
@@ -191,6 +195,9 @@ function FigmaSelect({ pages, value, onChange }: { pages: string[]; value: strin
                 {p}
               </div>
             ))}
+            {filtered.length === 0 && q && (
+              <div style={{ padding: "8px 14px", fontSize: 13, color: "#94a3b8" }}>검색 결과 없음</div>
+            )}
           </div>
         </div>
       )}
@@ -206,8 +213,6 @@ export default function App() {
   const [siteUrl, setSiteUrl] = useState("");
   const [figmaFileUrl, setFigmaFileUrl] = useState("");
   const [figmaPages, setFigmaPages] = useState<string[]>([]);
-  const [figmaLoading, setFigmaLoading] = useState(false);
-  const [figmaErr, setFigmaErr] = useState("");
   const [pageRows, setPageRows] = useState<PageRow[]>([{ id: 1, name: "", url: "", figmaPage: "" }]);
   const [commonOn, setCommonOn] = useState(true);
   const [selCommon, setSelCommon] = useState(["헤더", "푸터", "GNB"]);
@@ -224,8 +229,11 @@ export default function App() {
   const [error, setError] = useState("");
   const [wStep, setWStep] = useState(1);
 
+  // Figma 토큰
+  const [figmaToken, setFigmaToken] = useState("");
+  const [showFigmaToken, setShowFigmaToken] = useState(false);
+
   // Figma 페이지·프레임
-  const [figmaPageInput, setFigmaPageInput] = useState("");
   const [figmaFileName, setFigmaFileName] = useState("");
   const [figmaFetchMsg, setFigmaFetchMsg] = useState("");
   const [figmaTree, setFigmaTree] = useState<{ id: string; name: string; frames: { id: string; name: string }[] }[]>([]);
@@ -257,19 +265,70 @@ export default function App() {
   const toggle = <T,>(setter: React.Dispatch<React.SetStateAction<T[]>>, val: T) =>
     setter((p) => (p.includes(val) ? p.filter((x) => x !== val) : [...p, val]));
 
-  // 페이지 입력 → figmaPages 배열로 파싱
-  const applyFigmaPageInput = (raw: string) => {
-    const pages = raw.split(/[,\n]/).map(s => s.trim()).filter(Boolean);
-    setFigmaPages(pages);
-  };
+  // localStorage에서 Figma 토큰 복원
+  useEffect(() => {
+    const saved = localStorage.getItem("figmaToken");
+    if (saved) setFigmaToken(saved);
+  }, []);
+
+  // figmaTree 로드 시 pageRows 자동 생성
+  useEffect(() => {
+    if (figmaTree.length === 0) return;
+    const rows: PageRow[] = [];
+    figmaTree.forEach((page) => {
+      page.frames.forEach((frame) => {
+        rows.push({ id: Date.now() + Math.random(), name: frame.name, url: "", figmaPage: `${page.name} / ${frame.name}` });
+      });
+    });
+    if (rows.length > 0) setPageRows(rows);
+  }, [figmaTree]);
 
   // Figma URL → 파일 구조(페이지+프레임) 자동 가져오기
   const fetchFigmaInfo = async (url: string) => {
     if (!url.includes("figma.com")) return;
+    const fileKeyMatch = url.match(/figma\.com\/(?:file|design)\/([a-zA-Z0-9]+)/);
+    const fileKey = fileKeyMatch ? fileKeyMatch[1] : null;
+    if (!fileKey) { setFigmaFetchMsg("올바른 Figma URL이 아닙니다."); return; }
+
     setFigmaFetchMsg("Figma 파일 읽는 중...");
     setFigmaFileName("");
     setFigmaTree([]);
-    setSelectedFrames(new Set());
+
+    const token = figmaToken || localStorage.getItem("figmaToken") || "";
+
+    // Figma REST API 직접 호출 (토큰이 있는 경우)
+    if (token) {
+      try {
+        const res = await fetch(`https://api.figma.com/v1/files/${fileKey}?depth=2`, {
+          headers: { "X-Figma-Token": token },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const pages = (data.document?.children || [])
+            .filter((c: { type: string }) => c.type === "CANVAS")
+            .map((c: { name: string; id: string; children?: { type: string; name: string; id: string }[] }) => ({
+              id: c.id, name: c.name,
+              frames: (c.children || [])
+                .filter((n) => n.type === "FRAME" || n.type === "COMPONENT")
+                .map((f) => ({ id: f.id, name: f.name })),
+            }));
+          if (pages.length) {
+            setFigmaTree(pages);
+            setExpandedPages(new Set(pages.map((p: { id: string }) => p.id)));
+            setFigmaPages(pages.flatMap((p: { name: string; frames: { name: string }[] }) => p.frames.map((f) => f.name)));
+            setFigmaFileName(data.name || "");
+            const total = pages.reduce((acc: number, p: { frames: unknown[] }) => acc + p.frames.length, 0);
+            setFigmaFetchMsg(`✅ ${pages.length}개 페이지 · ${total}개 프레임`);
+            return;
+          }
+        } else if (res.status === 403) {
+          setFigmaFetchMsg("⚠️ 토큰이 유효하지 않습니다. 다시 확인해주세요.");
+          return;
+        }
+      } catch { /* ignore */ }
+    }
+
+    // 폴백: 서버 API (Figma MCP)
     try {
       const res = await fetch("/api/figma", {
         method: "POST",
@@ -279,32 +338,46 @@ export default function App() {
       const data = await res.json();
       if (!res.ok) { setFigmaFetchMsg("URL을 확인해주세요"); return; }
       setFigmaFileName(data.fileName || "");
-
       if (data.pages && data.pages.length > 0) {
-        // 페이지+프레임 트리 구조
         setFigmaTree(data.pages);
-        const allPageIds = new Set<string>(data.pages.map((p: { id: string }) => p.id));
-        setExpandedPages(allPageIds);
-
-        // 프레임이 있는 경우 전체 프레임명을 figmaPages에도 반영
-        const allFrames: string[] = [];
-        data.pages.forEach((p: { name: string; frames: { name: string }[] }) => {
-          if (p.frames && p.frames.length > 0) {
-            p.frames.forEach((f) => allFrames.push(f.name));
-          } else {
-            allFrames.push(p.name);
-          }
-        });
-        setFigmaPages(allFrames);
-
-        const totalFrames = data.pages.reduce((acc: number, p: { frames: unknown[] }) => acc + (p.frames?.length || 0), 0);
-        setFigmaFetchMsg(`✅ ${data.pages.length}개 페이지 · ${totalFrames}개 프레임 인식`);
+        setExpandedPages(new Set(data.pages.map((p: { id: string }) => p.id)));
+        setFigmaPages(data.pages.flatMap((p: { name: string; frames: { name: string }[] }) =>
+          p.frames.length > 0 ? p.frames.map((f) => f.name) : [p.name]
+        ));
+        const total = data.pages.reduce((acc: number, p: { frames: unknown[] }) => acc + (p.frames?.length || 0), 0);
+        setFigmaFetchMsg(`✅ ${data.pages.length}개 페이지 · ${total}개 프레임`);
       } else {
-        setFigmaFetchMsg(data.needsManual ? "Figma 데스크탑을 열고 해당 파일을 확인하세요. 또는 아래에 직접 입력하세요." : "프레임을 찾을 수 없습니다. 직접 입력해주세요.");
+        setFigmaFetchMsg("프레임을 찾을 수 없습니다. 아래 액세스 토큰을 입력해주세요.");
       }
     } catch {
-      setFigmaFetchMsg("연결 실패 — 아래에 직접 입력하세요");
+      setFigmaFetchMsg("연결 실패. 아래 액세스 토큰을 입력해주세요.");
     }
+  };
+
+  const togglePage = (pageId: string) => {
+    setExpandedPages((prev) => {
+      const n = new Set(prev);
+      n.has(pageId) ? n.delete(pageId) : n.add(pageId);
+      return n;
+    });
+  };
+
+  const selectAllFrames = () => {
+    const all = new Set<string>();
+    figmaTree.forEach((p) => p.frames.forEach((f) => all.add(`${p.id}:${f.id}`)));
+    setSelectedFrames(all);
+    const rows: PageRow[] = [];
+    figmaTree.forEach((p) =>
+      p.frames.forEach((f) => {
+        rows.push({ id: Date.now() + Math.random(), name: f.name, url: "", figmaPage: `${p.name} / ${f.name}` });
+      })
+    );
+    if (rows.length > 0) setPageRows(rows);
+  };
+
+  const resetFrames = () => {
+    setSelectedFrames(new Set());
+    setPageRows([{ id: 1, name: "", url: "", figmaPage: "" }]);
   };
 
   // 프레임 선택 → pageRows 자동 생성
@@ -518,22 +591,51 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
   };
 
   const downloadCSV = (type: string) => {
-    const q = (v: unknown) => '"' + String(v || "").replace(/"/g, '""') + '"';
-    const envStr = [env.version, env.aos && "AOS_" + env.aos, env.ios && "iOS_" + env.ios].filter(Boolean).join("\n") || "-";
-    const rows = [["환경", "Figma 페이지", "퍼블리싱 화면", "시나리오 / 이슈 사항", "개발팀 답변", "완료"].map(q).join(",")];
-    const render = (iss: Issue, label: string) =>
-      [q(envStr + "\n[" + (SEV[iss.severity] || SEV.low).label + "]"), q(figmaFileUrl || ""), q(iss.publishedUrl || siteUrl), q("[" + label + "]\n" + iss.issue + (iss.spacingNote ? "\n💡 " + iss.spacingNote : "")), q(iss.devAnswer || ""), q(iss.done ? "✓" : "")].join(",");
+    const envStr = [env.version, env.aos && "AOS_" + env.aos, env.ios && "iOS_" + env.ios].filter(Boolean).join(" / ") || "-";
+    const header = ["환경", "심각도", "Figma 페이지", "퍼블리싱 화면", "구분", "이슈 사항", "여백 보정", "개발팀 답변", "완료"];
+    const dataRows: (string | number)[][] = [header];
+
+    const toRow = (iss: Issue, label: string) => [
+      envStr,
+      (SEV[iss.severity] || SEV.low).label,
+      figmaFileUrl || "",
+      iss.publishedUrl || siteUrl,
+      label,
+      iss.issue,
+      iss.spacingNote || "",
+      iss.devAnswer || "",
+      iss.done ? "✓" : "",
+    ];
+
     if (type === "common") {
-      rows.push([q("【공통 영역】"), "", "", "", "", ""].join(","));
-      (issues?.commonIssues || []).forEach((i) => rows.push(render(i, i.component || "")));
+      dataRows.push(["【공통 영역】", "", "", "", "", "", "", "", ""]);
+      (issues?.commonIssues || []).forEach((i) => dataRows.push(toRow(i, i.component || "")));
     } else {
       groupByPath(issues?.pageIssues).forEach((g) => {
-        rows.push([q("【" + g.pageName + " (" + g.path + ")】"), "", "", "", "", ""].join(","));
-        g.issues.forEach((i) => rows.push(render(i, (i.breakpoint || "") + " / " + (i.category || ""))));
+        dataRows.push([`【${g.pageName} (${g.path})】`, "", "", "", "", "", "", "", ""]);
+        g.issues.forEach((i) => dataRows.push(toRow(i, (i.breakpoint || "") + " / " + (i.category || ""))));
       });
     }
-    const blob = new Blob(["\uFEFF" + rows.join("\n")], { type: "text/csv;charset=utf-8;" });
-    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = type + "_qa.csv"; a.click();
+
+    const ws = XLSX.utils.aoa_to_sheet(dataRows);
+
+    // 컬럼 너비 설정
+    ws["!cols"] = [
+      { wch: 16 }, { wch: 10 }, { wch: 40 }, { wch: 36 },
+      { wch: 20 }, { wch: 50 }, { wch: 30 }, { wch: 30 }, { wch: 6 },
+    ];
+
+    // 헤더 행 스타일 (배경색)
+    header.forEach((_, ci) => {
+      const cell = ws[XLSX.utils.encode_cell({ r: 0, c: ci })];
+      if (cell) {
+        cell.s = { font: { bold: true }, fill: { fgColor: { rgb: "2D6A4F" } }, fontColor: { rgb: "FFFFFF" } };
+      }
+    });
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, type === "common" ? "공통 영역" : "페이지별");
+    XLSX.writeFile(wb, `${type}_qa.xlsx`);
   };
 
   const IssueRow = ({ iss, type }: { iss: Issue; type: string }) => {
@@ -710,15 +812,9 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
           </Card>
         )}
 
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <button onClick={() => setView("designer")} style={solidBtn(PURPLE)}>🎨 디자이너 뷰</button>
-          <button onClick={() => setView("publisher")} style={solidBtn(HDR)}>⚙️ 퍼블리셔 뷰</button>
-          {compIssues.length > 0 && <button onClick={() => setView("component")} style={solidBtn("#0891b2")}>🔬 컴포넌트 뷰</button>}
-          {screenshotResults.length > 0 && <button onClick={() => setView("screenshot")} style={solidBtn("#7c3aed")}>📸 스크린샷 비교</button>}
-          <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-            <button onClick={() => downloadCSV("common")} style={ghostBtn(HDR)}>공통 CSV</button>
-            <button onClick={() => downloadCSV("page")} style={ghostBtn(HDR)}>페이지 CSV</button>
-          </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={() => downloadCSV("common")} style={ghostBtn(HDR)}>공통 엑셀</button>
+          <button onClick={() => downloadCSV("page")} style={ghostBtn(HDR)}>페이지 엑셀</button>
         </div>
       </div>
     );
@@ -735,7 +831,7 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
               <div style={{ background: "#8b5cf6", borderRadius: 6, padding: "4px 12px", color: "#fff", fontSize: 13, fontWeight: 700 }}>🧩 공통 영역</div>
               <span style={{ color: "#94a3b8", fontSize: 12 }}>{filteredCommon.length}건</span>
-              <button onClick={() => downloadCSV("common")} style={{ ...ghostBtn(HDR), marginLeft: "auto", fontSize: 12 }}>CSV</button>
+              <button onClick={() => downloadCSV("common")} style={{ ...ghostBtn(HDR), marginLeft: "auto", fontSize: 12 }}>엑셀</button>
             </div>
             <TableShell type="common">{filteredCommon.map((iss) => <IssueRow key={iss.id} iss={iss} type="common" />)}</TableShell>
           </div>
@@ -860,7 +956,7 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <div><Label>경로</Label><input value={newIssue.path || "/"} onChange={(e) => setNewIssue((p) => ({ ...p, path: e.target.value }))} style={inp} placeholder="/home" /></div>
               <div><Label>페이지명</Label><input value={newIssue.pageName || ""} onChange={(e) => setNewIssue((p) => ({ ...p, pageName: e.target.value }))} style={inp} /></div>
-              <div><Label>Figma 페이지</Label>{figmaPages.length > 0 ? <FigmaSelect pages={figmaPages} value={newIssue.figmaPage || ""} onChange={(v) => setNewIssue((p) => ({ ...p, figmaPage: v }))} /> : <input value={newIssue.figmaPage || ""} onChange={(e) => setNewIssue((p) => ({ ...p, figmaPage: e.target.value }))} style={inp} placeholder="페이지명" />}</div>
+              <div><Label>Figma 페이지</Label><FigmaSelect pages={figmaPages} value={newIssue.figmaPage || ""} onChange={(v) => setNewIssue((p) => ({ ...p, figmaPage: v }))} /></div>
               <div><Label>화면 크기</Label><select value={newIssue.breakpoint || ""} onChange={(e) => setNewIssue((p) => ({ ...p, breakpoint: e.target.value }))} style={inp}>{breakpoints.map((b) => <option key={b.label}>{b.label}</option>)}</select></div>
               <div style={{ gridColumn: "span 2" }}><Label>검수 항목</Label><select value={newIssue.category || PAGE_CHECKS[0]} onChange={(e) => setNewIssue((p) => ({ ...p, category: e.target.value }))} style={inp}>{PAGE_CHECKS.map((c) => <option key={c}>{c}</option>)}</select></div>
             </div>
@@ -930,16 +1026,6 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
         <div style={{ maxWidth: 1100, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", height: 56 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontSize: 18, fontWeight: 700, color: "#0f172a" }}>🔍 디자인 QA</span>
-            {step === 2 && issues && (
-              <div style={{ display: "flex", gap: 4, marginLeft: 16 }}>
-                {[["dashboard", "📊 대시보드"], ["designer", "🎨 디자이너"], ["publisher", "⚙️ 퍼블리셔"],
-                  ...(compIssues.length > 0 ? [["component", "🔬 컴포넌트"]] : []),
-                  ...(screenshotResults.length > 0 ? [["screenshot", "📸 스크린샷"]] : []),
-                ].map(([v, l]) => (
-                  <button key={v} onClick={() => setView(v)} style={{ padding: "4px 12px", borderRadius: 6, border: "none", background: view === v ? (v === "component" ? "#0891b2" : v === "screenshot" ? "#7c3aed" : PURPLE) : "transparent", color: view === v ? "#fff" : "#64748b", cursor: "pointer", fontSize: 13, fontWeight: view === v ? 700 : 400 }}>{l}</button>
-                ))}
-              </div>
-            )}
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <button onClick={() => setExtModal(true)} style={{ ...ghostBtn(PURPLE), fontSize: 12 }}>🧩 크롬 확장</button>
@@ -974,7 +1060,7 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
                     <input value={siteUrl} onChange={(e) => setSiteUrl(e.target.value)} placeholder="https://your-site.com" style={inp} />
                   </div>
                   <div>
-                    <Label sub="(선택)">Figma 파일 주소</Label>
+                    <Label>Figma 파일 주소</Label>
                     <input
                       value={figmaFileUrl}
                       onChange={(e) => {
@@ -993,13 +1079,39 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
                       style={inp}
                     />
                     {(figmaFileName || figmaFetchMsg) && (
-                      <div style={{ marginTop: 6, fontSize: 12, color: figmaFetchMsg.startsWith("✅") ? "#16a34a" : "#64748b", display: "flex", alignItems: "center", gap: 6 }}>
+                      <div style={{ marginTop: 6, fontSize: 12, color: figmaFetchMsg.startsWith("✅") ? "#16a34a" : figmaFetchMsg.startsWith("⚠️") ? "#b45309" : "#64748b", display: "flex", alignItems: "center", gap: 6 }}>
                         {figmaFileName && <span style={{ fontWeight: 600 }}>📄 {figmaFileName}</span>}
                         {figmaFetchMsg && <span>{figmaFetchMsg}</span>}
                       </div>
                     )}
+                    {/* Figma 액세스 토큰 */}
+                    <div style={{ marginTop: 8 }}>
+                      <button
+                        onClick={() => setShowFigmaToken((v) => !v)}
+                        style={{ fontSize: 12, color: "#6366f1", background: "none", border: "none", cursor: "pointer", padding: 0, textDecoration: "underline" }}
+                      >
+                        {showFigmaToken ? "토큰 숨기기 ▲" : "프레임이 안 보이나요? 액세스 토큰 입력 ▼"}
+                      </button>
+                      {showFigmaToken && (
+                        <div style={{ marginTop: 8, padding: 12, background: "#f0f4ff", borderRadius: 8, border: "1px solid #c7d2fe" }}>
+                          <div style={{ fontSize: 12, color: "#4338ca", marginBottom: 8 }}>
+                            Figma → 설정 → <strong>Personal access tokens</strong> → 토큰 생성 후 붙여넣기
+                          </div>
+                          <input
+                            value={figmaToken}
+                            onChange={(e) => {
+                              setFigmaToken(e.target.value);
+                              localStorage.setItem("figmaToken", e.target.value);
+                            }}
+                            onBlur={() => { if (figmaToken && figmaFileUrl) fetchFigmaInfo(figmaFileUrl); }}
+                            placeholder="figd_..."
+                            style={{ ...inp, fontFamily: "monospace", fontSize: 13 }}
+                            autoComplete="off"
+                          />
+                        </div>
+                      )}
+                    </div>
                   </div>
-
 
                   {/* 🔐 검수용 계정 */}
                   <div style={{ background: "#f8fafc", borderRadius: 12, padding: 16, border: "1px solid #e2e8f0" }}>
@@ -1040,7 +1152,7 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
                   </div>
                 </div>
                 <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20 }}>
-                  <button onClick={() => setWStep(2)} disabled={!siteUrl} style={{ ...solidBtn(PURPLE), opacity: siteUrl ? 1 : 0.4, padding: "10px 24px", fontSize: 14 }}>다음 →</button>
+                  <button onClick={() => setWStep(2)} disabled={!siteUrl || !figmaFileUrl} style={{ ...solidBtn(PURPLE), opacity: siteUrl && figmaFileUrl ? 1 : 0.4, padding: "10px 24px", fontSize: 14 }}>다음 →</button>
                 </div>
               </Card>
             )}
@@ -1051,61 +1163,10 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
                 <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>어떤 페이지를 검수할까요?</div>
                 <div style={{ fontSize: 13, color: "#94a3b8", marginBottom: 20 }}>Figma 프레임을 선택하면 아래 목록에 자동으로 추가됩니다</div>
 
-                {/* Figma 프레임 선택 */}
-                {figmaFileUrl && (
-                  <div style={{ marginBottom: 16 }}>
-                    <Label sub={figmaFileName ? `📄 ${figmaFileName}` : figmaFetchMsg || "(Figma URL 연결됨)"}>Figma 프레임 선택</Label>
-
-                    {figmaTree.length > 0 ? (
-                      <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, overflow: "hidden", background: "#fff" }}>
-                        <div style={{ padding: "8px 14px", borderBottom: "1px solid #f1f5f9", display: "flex", alignItems: "center", justifyContent: "space-between", background: "#f8fafc" }}>
-                          <span style={{ fontSize: 12, color: "#64748b", fontWeight: 600 }}>{selectedFrames.size}개 선택됨</span>
-                          <div style={{ display: "flex", gap: 8 }}>
-                            <button onClick={() => {
-                              const all = new Set<string>();
-                              figmaTree.forEach(p => p.frames.forEach(f => all.add(`${p.id}:${f.id}`)));
-                              setSelectedFrames(all);
-                              const rows: PageRow[] = [];
-                              figmaTree.forEach(p => p.frames.forEach(f => {
-                                rows.push({ id: Date.now() + Math.random(), name: f.name, url: "", figmaPage: `${p.name} / ${f.name}` });
-                              }));
-                              if (rows.length > 0) setPageRows(rows);
-                            }} style={{ fontSize: 11, padding: "2px 8px", borderRadius: 6, border: `1px solid ${PURPLE}`, background: "transparent", color: PURPLE, cursor: "pointer" }}>전체 선택</button>
-                            <button onClick={() => { setSelectedFrames(new Set()); setPageRows([{ id: 1, name: "", url: "", figmaPage: "" }]); }}
-                              style={{ fontSize: 11, padding: "2px 8px", borderRadius: 6, border: "1px solid #e2e8f0", background: "transparent", color: "#64748b", cursor: "pointer" }}>초기화</button>
-                          </div>
-                        </div>
-                        <div style={{ maxHeight: 260, overflowY: "auto" }}>
-                          {figmaTree.map((page) => (
-                            <div key={page.id}>
-                              <div onClick={() => setExpandedPages(prev => { const n = new Set(prev); n.has(page.id) ? n.delete(page.id) : n.add(page.id); return n; })}
-                                style={{ padding: "8px 14px", display: "flex", alignItems: "center", gap: 8, cursor: "pointer", background: "#f8fafc", borderBottom: "1px solid #f1f5f9" }}>
-                                <span style={{ fontSize: 11, color: "#94a3b8", userSelect: "none" }}>{expandedPages.has(page.id) ? "▾" : "▸"}</span>
-                                <span style={{ fontSize: 13, fontWeight: 600, color: "#334155" }}>📄 {page.name}</span>
-                                <span style={{ fontSize: 11, color: "#94a3b8", marginLeft: "auto" }}>{page.frames.length}개</span>
-                              </div>
-                              {expandedPages.has(page.id) && page.frames.map((frame) => {
-                                const key = `${page.id}:${frame.id}`;
-                                const checked = selectedFrames.has(key);
-                                return (
-                                  <label key={frame.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 14px 7px 32px", cursor: "pointer", borderBottom: "1px solid #f8fafc", background: checked ? "#f0f4ff" : "transparent" }}>
-                                    <input type="checkbox" checked={checked} onChange={() => toggleFrame(page.name, frame.name, key)} style={{ width: 14, height: 14, accentColor: PURPLE, cursor: "pointer" }} />
-                                    <span style={{ fontSize: 13, color: checked ? PURPLE : "#475569", fontWeight: checked ? 600 : 400 }}>🖼 {frame.name}</span>
-                                  </label>
-                                );
-                              })}
-                              {expandedPages.has(page.id) && page.frames.length === 0 && (
-                                <div style={{ padding: "7px 14px 7px 32px", fontSize: 12, color: "#94a3b8", borderBottom: "1px solid #f8fafc" }}>프레임 없음</div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : (
-                      <div style={{ fontSize: 12, color: "#94a3b8", padding: "10px 0" }}>
-                        {figmaFetchMsg || "Figma 데스크탑을 열고 해당 파일을 확인하세요"}
-                      </div>
-                    )}
+                {/* Figma 파일 정보 표시 */}
+                {figmaFileName && (
+                  <div style={{ marginBottom: 12, padding: "8px 12px", background: "#f0fdf4", borderRadius: 8, border: "1px solid #bbf7d0", fontSize: 13, color: "#15803d" }}>
+                    📄 {figmaFileName} · {figmaFetchMsg}
                   </div>
                 )}
 
@@ -1116,7 +1177,7 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
                   {pageRows.map((row, idx) => (
                     <div key={row.id} style={{ display: "grid", gridTemplateColumns: "140px 1fr 1fr 32px", borderBottom: idx < pageRows.length - 1 ? "1px solid #f8fafc" : "none", alignItems: "center" }}>
                       <div style={{ padding: "6px 8px 6px 14px" }}><input value={row.name} onChange={(e) => setPageRows((p) => p.map((r) => r.id === row.id ? { ...r, name: e.target.value } : r))} placeholder="예) 홈" style={{ ...inp, padding: "7px 10px" }} /></div>
-                      <div style={{ padding: "6px 8px" }}>{figmaPages.length > 0 ? <FigmaSelect pages={figmaPages} value={row.figmaPage} onChange={(v) => setPageRows((p) => p.map((r) => r.id === row.id ? { ...r, figmaPage: v } : r))} /> : <input value={row.figmaPage} onChange={(e) => setPageRows((p) => p.map((r) => r.id === row.id ? { ...r, figmaPage: e.target.value } : r))} placeholder="직접 입력" style={{ ...inp, padding: "7px 10px" }} />}</div>
+                      <div style={{ padding: "6px 8px" }}><FigmaSelect pages={figmaPages} value={row.figmaPage} onChange={(v) => setPageRows((p) => p.map((r) => r.id === row.id ? { ...r, figmaPage: v } : r))} /></div>
                       <div style={{ padding: "6px 8px" }}><input value={row.url} onChange={(e) => setPageRows((p) => p.map((r) => r.id === row.id ? { ...r, url: e.target.value } : r))} placeholder="https://your-site.com/home" style={{ ...inp, padding: "7px 10px" }} /></div>
                       <div style={{ textAlign: "center" }}>{pageRows.length > 1 && <button onClick={() => setPageRows((p) => p.filter((r) => r.id !== row.id))} style={{ background: "none", border: "none", color: "#fca5a5", cursor: "pointer", fontSize: 14 }}>✕</button>}</div>
                     </div>
@@ -1257,11 +1318,47 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
                 <div style={{ fontSize: 13, color: "#94a3b8", marginTop: 6 }}>margin/padding 보정 · 스크린샷 비교 · 로그인 시나리오 포함</div>
               </Card>
             )}
-            {!loading && (
+            {!loading && issues && (
               <>
-                {view === "dashboard" && issues && <Dashboard />}
-                {view === "designer" && issues && <DesignerView />}
-                {view === "publisher" && issues && <PublisherView />}
+                {/* 탭 바 */}
+                <div style={{ display: "flex", gap: 0, marginBottom: 20, background: "#fff", borderRadius: 12, border: "1px solid #e2e8f0", overflow: "hidden" }}>
+                  {[
+                    ["dashboard", "📊 대시보드"],
+                    ["designer", "🎨 디자이너"],
+                    ["publisher", "⚙️ 퍼블리셔"],
+                    ...(compIssues.length > 0 ? [["component", "🔬 컴포넌트"]] : []),
+                    ...(screenshotResults.length > 0 ? [["screenshot", "📸 스크린샷"]] : []),
+                  ].map(([v, l], i, arr) => (
+                    <button
+                      key={v}
+                      onClick={() => setView(v)}
+                      style={{
+                        flex: 1,
+                        padding: "13px 0",
+                        border: "none",
+                        borderRight: i < arr.length - 1 ? "1px solid #e2e8f0" : "none",
+                        background: view === v ? (v === "component" ? "#0891b2" : v === "screenshot" ? "#7c3aed" : PURPLE) : "#fff",
+                        color: view === v ? "#fff" : "#64748b",
+                        cursor: "pointer",
+                        fontSize: 14,
+                        fontWeight: view === v ? 700 : 500,
+                        transition: "all .15s",
+                      }}
+                    >
+                      {l}
+                    </button>
+                  ))}
+                </div>
+
+                {view === "dashboard" && <Dashboard />}
+                {view === "designer" && <DesignerView />}
+                {view === "publisher" && <PublisherView />}
+                {view === "component" && <ComponentView />}
+                {view === "screenshot" && <ScreenshotView />}
+              </>
+            )}
+            {!loading && !issues && (
+              <>
                 {view === "component" && <ComponentView />}
                 {view === "screenshot" && <ScreenshotView />}
               </>
