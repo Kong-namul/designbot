@@ -138,27 +138,52 @@ const SevBadge = ({ s }: { s: string }) => {
 function FigmaSelect({ pages, value, onChange }: { pages: string[]; value: string; onChange: (v: string) => void }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
-  const ref = useRef<HTMLDivElement>(null);
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const dropRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     const h = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (
+        triggerRef.current && !triggerRef.current.contains(e.target as Node) &&
+        dropRef.current && !dropRef.current.contains(e.target as Node)
+      ) setOpen(false);
     };
     document.addEventListener("mousedown", h);
     return () => document.removeEventListener("mousedown", h);
   }, []);
+
+  const handleOpen = () => {
+    if (triggerRef.current) setRect(triggerRef.current.getBoundingClientRect());
+    setOpen((o) => !o);
+  };
+
   const filtered = pages.filter((p) => p.toLowerCase().includes(q.toLowerCase()));
   return (
-    <div ref={ref} style={{ position: "relative" }}>
-      <div onClick={() => setOpen((o) => !o)} style={{ ...inp, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ color: value ? "#1e293b" : "#94a3b8" }}>{value || "Figma 페이지 선택"}</span>
-        <span style={{ fontSize: 10, color: "#94a3b8" }}>▼</span>
+    <div style={{ position: "relative" }}>
+      <div ref={triggerRef} onClick={handleOpen} style={{ ...inp, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ color: value ? "#1e293b" : "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{value || "Figma 프레임 선택"}</span>
+        <span style={{ fontSize: 10, color: "#94a3b8", flexShrink: 0, marginLeft: 4 }}>▼</span>
       </div>
-      {open && (
-        <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10, zIndex: 300, boxShadow: "0 8px 24px rgba(0,0,0,.1)" }}>
+      {open && rect && (
+        <div
+          ref={dropRef}
+          style={{
+            position: "fixed",
+            top: rect.bottom + 4,
+            left: rect.left,
+            width: Math.max(rect.width, 220),
+            background: "#fff",
+            border: "1px solid #e2e8f0",
+            borderRadius: 10,
+            zIndex: 9999,
+            boxShadow: "0 8px 24px rgba(0,0,0,.12)",
+          }}
+        >
           <div style={{ padding: 8, borderBottom: "1px solid #f1f5f9" }}>
             <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="검색..." style={{ ...inp, padding: "6px 10px", fontSize: 13 }} />
           </div>
-          <div style={{ maxHeight: 180, overflowY: "auto" }}>
+          <div style={{ maxHeight: 200, overflowY: "auto" }}>
             <div onClick={() => { onChange(""); setOpen(false); setQ(""); }} style={{ padding: "8px 14px", cursor: "pointer", fontSize: 13, color: "#94a3b8" }}>— 선택 안 함</div>
             {filtered.map((p) => (
               <div key={p} onClick={() => { onChange(p); setOpen(false); setQ(""); }}
@@ -1084,9 +1109,9 @@ border가 있는 요소는 ±border-width 오차를 정상으로 처리하세요
                   </div>
                 )}
 
-                <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, overflow: "hidden", marginBottom: 12 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "140px 1fr 1fr 32px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
-                    {["페이지 이름", "Figma 페이지", "웹 페이지 주소", ""].map((h, i) => <div key={i} style={{ padding: "9px 14px", fontSize: 12, color: "#64748b", fontWeight: 600 }}>{h}</div>)}
+                <div style={{ border: "1px solid #e2e8f0", borderRadius: 10, marginBottom: 12 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "140px 1fr 1fr 32px", background: "#f8fafc", borderBottom: "1px solid #e2e8f0", borderRadius: "10px 10px 0 0" }}>
+                    {["페이지 이름", "Figma 프레임", "웹 페이지 주소", ""].map((h, i) => <div key={i} style={{ padding: "9px 14px", fontSize: 12, color: "#64748b", fontWeight: 600 }}>{h}</div>)}
                   </div>
                   {pageRows.map((row, idx) => (
                     <div key={row.id} style={{ display: "grid", gridTemplateColumns: "140px 1fr 1fr 32px", borderBottom: idx < pageRows.length - 1 ? "1px solid #f8fafc" : "none", alignItems: "center" }}>
